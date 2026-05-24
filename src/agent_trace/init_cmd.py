@@ -49,26 +49,29 @@ def _hooks_already_configured(settings: dict) -> bool:
     hooks = settings.get("hooks", {})
     for event in HOOK_EVENTS:
         for entry in hooks.get(event, []):
-            # hooks can be strings or dicts with "command" key
-            cmd = entry if isinstance(entry, str) else entry.get("command", "")
-            if "agent-strace" in cmd:
-                return True
+            # Claude Code format: {"matcher": "", "hooks": [{"type": "command", "command": "..."}]}
+            for hook in entry.get("hooks", []):
+                if "agent-strace" in hook.get("command", ""):
+                    return True
     return False
 
 
 def _patch_settings(settings: dict, redact: bool = True) -> dict:
-    """Add agent-strace hooks to settings dict. Non-destructive."""
+    """Add agent-strace hooks to settings dict in Claude Code format. Non-destructive."""
     hooks = settings.setdefault("hooks", {})
     for event in HOOK_EVENTS:
         existing = hooks.setdefault(event, [])
         cmd = _build_hook_command(event, redact=redact)
-        # Don't duplicate
+        # Don't duplicate — check inside nested hooks arrays
         already = any(
-            (e if isinstance(e, str) else e.get("command", "")) == cmd
-            for e in existing
+            any("agent-strace" in h.get("command", "") for h in entry.get("hooks", []))
+            for entry in existing
         )
         if not already:
-            existing.append({"command": cmd})
+            existing.append({
+                "matcher": "",
+                "hooks": [{"type": "command", "command": cmd}],
+            })
     return settings
 
 
