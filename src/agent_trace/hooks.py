@@ -315,7 +315,26 @@ def handle_post_tool(input_data: dict, failed: bool = False) -> None:
 
     redact = _should_redact()
     tool_name = input_data.get("tool_name", "unknown")
-    tool_output = input_data.get("tool_output", "")
+
+    # Claude Code sends tool_response (not tool_output); extract text from content blocks
+    raw = input_data.get("tool_response", input_data.get("tool_output", ""))
+    if isinstance(raw, dict):
+        content = raw.get("content", [])
+        if isinstance(content, list):
+            tool_output = "\n".join(
+                item.get("text", "") for item in content
+                if isinstance(item, dict) and item.get("type") == "text"
+            )
+        else:
+            tool_output = str(content)
+        failed = failed or bool(raw.get("is_error", False))
+    elif isinstance(raw, list):
+        tool_output = "\n".join(
+            item.get("text", "") for item in raw
+            if isinstance(item, dict) and item.get("type") == "text"
+        )
+    else:
+        tool_output = str(raw)
 
     if failed:
         event_type = EventType.ERROR
