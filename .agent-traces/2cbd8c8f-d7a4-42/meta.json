@@ -1,0 +1,19 @@
+{
+  "session_id": "2cbd8c8f-d7a4-42",
+  "started_at": 1779624378.85487,
+  "agent_name": "claude-code",
+  "command": "claude-code (startup)",
+  "tool_calls": 104,
+  "errors": 3,
+  "attribution": {
+    "os_user": "rudrakshsisodia",
+    "hostname": "Rudrakshs-MacBook-Pro.local",
+    "pid": 5590,
+    "ppid": 5537,
+    "agent_provider": "unknown",
+    "git_repo": "https://github.com/Siddhant-K-code/agent-trace.git",
+    "git_branch": "main",
+    "git_commit": "d9a7488",
+    "working_dir": "/Users/rudrakshsisodia/repos/agent-trace"
+  }
+}

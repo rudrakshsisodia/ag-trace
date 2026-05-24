@@ -1,0 +1,56 @@
+name: Publish VS Code Extension
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vscode-extension
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Resize icon to 128x128
+        run: |
+          npm install sharp
+          node -e "require('sharp')('../Agent trace.png').resize(128,128,{fit:'cover'}).png().toFile('icon.png').then(()=>console.log('done')).catch(e=>{console.error(e);process.exit(1);})"
+
+      - name: Install vsce
+        run: npm install -g @vscode/vsce
+
+      # vscode:prepublish runs `tsc` automatically before packaging
+      - name: Package extension
+        run: vsce package --out agent-strace.vsix
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-strace-vsix
+          path: vscode-extension/agent-strace.vsix
+
+      - name: Publish to VS Code Marketplace
+        run: vsce publish --packagePath agent-strace.vsix --pat ${{ secrets.VSCE_PAT }}
+        continue-on-error: true
+
+      - name: Install ovsx
+        run: npm install -g ovsx
+
+      - name: Create Open VSX namespace
+        run: ovsx create-namespace Siddhant-K-code --pat ${{ secrets.OVSX_PAT }}
+        continue-on-error: true
+
+      - name: Publish to Open VSX Registry
+        run: ovsx publish agent-strace.vsix --pat ${{ secrets.OVSX_PAT }} --skip-duplicate
