@@ -39,6 +39,7 @@ can find the current session.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import sys
@@ -53,6 +54,7 @@ from .store import TraceStore
 # Pending tool calls are tracked in a file so separate hook processes
 # can link PostToolUse back to PreToolUse for latency measurement.
 _PENDING_FILE = ".pending-calls.json"
+_PENDING_LOCK_FILE = ".pending-calls.lock"
 
 
 def _get_store_dir() -> str:
@@ -69,6 +71,10 @@ def _active_session_path() -> Path:
 
 def _pending_calls_path() -> Path:
     return Path(_get_store_dir()) / _PENDING_FILE
+
+
+def _pending_lock_path() -> Path:
+    return Path(_get_store_dir()) / _PENDING_LOCK_FILE
 
 
 def _read_active_session() -> str | None:
@@ -95,7 +101,10 @@ def _read_pending_calls() -> dict:
     if path.exists():
         try:
             return json.loads(path.read_text())
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError as e:
+            sys.stderr.write(f"[agent-trace] Warning: corrupted file {path}: {e}\n")
+            return {}
+        except OSError:
             return {}
     return {}
 
@@ -106,6 +115,20 @@ def _write_pending_calls(calls: dict) -> None:
     path.write_text(json.dumps(calls))
 
 
+def _locked_update_pending(update_fn) -> None:
+    """Read-modify-write pending calls under a file lock to prevent races."""
+    lock_path = _pending_lock_path()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            calls = _read_pending_calls()
+            update_fn(calls)
+            _write_pending_calls(calls)
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
+
 def _read_stdin() -> dict:
     """Read JSON from stdin (provided by Claude Code)."""
     try:
@@ -113,7 +136,10 @@ def _read_stdin() -> dict:
         if not data.strip():
             return {}
         return json.loads(data)
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError as e:
+        sys.stderr.write(f"[agent-trace] Warning: corrupted stdin JSON: {e}\n")
+        return {}
+    except OSError:
         return {}
 
 
@@ -215,13 +241,14 @@ def handle_pre_tool(input_data: dict) -> None:
         meta.tool_calls += 1
         store.update_meta(meta)
 
-    # Track pending call for latency measurement
-    pending = _read_pending_calls()
-    pending[tool_name] = {
-        "event_id": event.event_id,
-        "timestamp": event.timestamp,
-    }
-    _write_pending_calls(pending)
+    # Track pending call for latency measurement, keyed by event_id to avoid
+    # collisions when two calls of the same tool run concurrently.
+    def _add(calls):
+        calls[event.event_id] = {
+            "tool_name": tool_name,
+            "timestamp": event.timestamp,
+        }
+    _locked_update_pending(_add)
 
 
 def handle_user_prompt(input_data: dict) -> None:
@@ -317,13 +344,23 @@ def handle_post_tool(input_data: dict, failed: bool = False) -> None:
         data=event_data,
     )
 
-    # Link to pending call for latency
-    pending = _read_pending_calls()
-    call_info = pending.pop(tool_name, None)
-    if call_info:
-        event.parent_id = call_info["event_id"]
-        event.duration_ms = (event.timestamp - call_info["timestamp"]) * 1000
-        _write_pending_calls(pending)
+    # Link to pending call for latency. Entries are keyed by event_id; find the
+    # oldest entry whose tool_name matches (closest in time) and remove it.
+    matched_key = None
+    matched_info = None
+
+    def _pop(calls):
+        nonlocal matched_key, matched_info
+        candidates = [(k, v) for k, v in calls.items() if v.get("tool_name") == tool_name]
+        if candidates:
+            matched_key, matched_info = min(candidates, key=lambda kv: kv[1]["timestamp"])
+            del calls[matched_key]
+
+    _locked_update_pending(_pop)
+
+    if matched_info:
+        event.parent_id = matched_key
+        event.duration_ms = (event.timestamp - matched_info["timestamp"]) * 1000
 
     store.append_event(session_id, event)
 

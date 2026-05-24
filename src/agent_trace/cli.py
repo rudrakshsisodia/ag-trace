@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
 import time
 
@@ -39,6 +40,7 @@ from .shadow_ai import cmd_audit_tools
 from .inflation import cmd_inflation
 from .diff import cmd_diff
 from .eval import cmd_eval
+from .init_cmd import cmd_init
 from .explain import cmd_explain
 from .jsonl_import import cmd_import
 from .policy import cmd_policy
@@ -49,7 +51,7 @@ from .watch import cmd_watch
 from .why import cmd_why
 from .models import EventType, SessionMeta, TraceEvent
 from .proxy import MCPProxy
-from .replay import format_event, format_summary, list_sessions, replay_session
+from .replay import format_event, _format_event_legacy, format_summary, list_sessions, replay_session
 from .store import TraceStore
 from .subagent import cmd_replay_tree, cmd_stats_tree
 from .why import cmd_why
@@ -57,7 +59,7 @@ from .why import cmd_why
 
 def _print_live_event(event: TraceEvent) -> None:
     """Print event to stderr during recording."""
-    line = format_event(event)
+    line = _format_event_legacy(event)
     sys.stderr.write(f"\r{line}\n")
     sys.stderr.flush()
 
@@ -164,7 +166,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
         if found:
             session_id = found
         else:
-            sys.stderr.write(f"Session not found: {session_id}\n")
+            sys.stderr.write(f"Session not found: {session_id}\n  → Run `agent-strace list` to see available sessions\n")
             return 1
 
     event_filter = None
@@ -210,7 +212,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         if found:
             session_id = found
         else:
-            sys.stderr.write(f"Session not found: {session_id}\n")
+            sys.stderr.write(f"Session not found: {session_id}\n  → Run `agent-strace list` to see available sessions\n")
             return 1
 
     meta = store.load_meta(session_id)
@@ -239,7 +241,7 @@ def cmd_export(args: argparse.Namespace) -> int:
         if found:
             session_id = found
         else:
-            sys.stderr.write(f"Session not found: {session_id}\n")
+            sys.stderr.write(f"Session not found: {session_id}\n  → Run `agent-strace list` to see available sessions\n")
             return 1
 
     events = store.load_events(session_id)
@@ -314,7 +316,7 @@ def cmd_stats(args: argparse.Namespace) -> int:
         if found:
             session_id = found
         else:
-            sys.stderr.write(f"Session not found: {session_id}\n")
+            sys.stderr.write(f"Session not found: {session_id}\n  → Run `agent-strace list` to see available sessions\n")
             return 1
 
     events = store.load_events(session_id)
@@ -334,28 +336,28 @@ def cmd_stats(args: argparse.Namespace) -> int:
             if result and result.duration_ms:
                 tool_durations.setdefault(name, []).append(result.duration_ms)
 
-    print(format_summary(meta))
-    print()
+    sys.stdout.write(str(format_summary(meta)) + "\n")
+    sys.stdout.write("\n")
 
     if tool_counts:
-        print(f"  Tool Call Frequency:")
+        sys.stdout.write("  Tool Call Frequency:\n")
         for name, count in sorted(tool_counts.items(), key=lambda x: -x[1]):
             avg_ms = ""
             if name in tool_durations:
                 durations = tool_durations[name]
                 avg = sum(durations) / len(durations)
                 avg_ms = f"  avg: {avg:.0f}ms"
-            print(f"    {name:<30} {count:>4}x{avg_ms}")
+            sys.stdout.write(f"    {name:<30} {count:>4}x{avg_ms}\n")
 
     # error summary
     errors = [e for e in events if e.event_type == EventType.ERROR]
     if errors:
-        print(f"\n  Errors ({len(errors)}):")
+        sys.stdout.write(f"\n  Errors ({len(errors)}):\n")
         for e in errors:
             msg = e.data.get("message", "unknown")
-            print(f"    {msg[:80]}")
+            sys.stdout.write(f"    {msg[:80]}\n")
 
-    print()
+    sys.stdout.write("\n")
     return 0
 
 
@@ -409,7 +411,76 @@ def cmd_setup(args: argparse.Namespace) -> None:
         "assistant responses, and every tool call (Bash, Edit, Write, "
         "Read, Agent, and all MCP tools).\n"
         "Replay with: agent-strace replay\n"
+        "Tip: `agent-strace init` can configure this automatically.\n"
     )
+
+
+def resolve_session(session_id: str | None, store: TraceStore) -> str | None:
+    """Resolve a session ID (or prefix) to a full session ID. Returns latest if None."""
+    if not session_id:
+        return store.get_latest_session_id()
+    if store.session_exists(session_id):
+        return session_id
+    return store.find_session(session_id)
+
+
+def cmd_view(args: argparse.Namespace, store: TraceStore | None = None) -> int:
+    """Smart view: compact timeline with header + contextual hints."""
+    if store is None:
+        store = TraceStore(args.trace_dir)
+
+    session_id = resolve_session(args.session_id, store)
+    if session_id is None:
+        sys.stderr.write("No sessions found. Run Claude Code first, then try again.\n")
+        return 1
+
+    events = store.load_events(session_id)
+    meta = store.load_meta(session_id)
+
+    if args.json:
+        sys.stdout.write(json.dumps([json.loads(e.to_json()) for e in events], indent=2) + "\n")
+        return 0
+
+    if args.html:
+        from .replay import replay_to_html
+        replay_to_html(store, session_id, output_path=args.html)
+        sys.stdout.write(f"HTML replay written to {args.html}\n")
+        return 0
+
+    duration = ""
+    if meta and meta.ended_at and meta.started_at:
+        secs = meta.ended_at - meta.started_at
+        duration = f"{int(secs // 60)}m {int(secs % 60)}s" if secs >= 60 else f"{secs:.1f}s"
+
+    errors = len([e for e in events if e.event_type.value == "error"])
+    header_parts = [f"Session: {session_id[:12]}"]
+    if duration:
+        header_parts.append(f"Duration: {duration}")
+    if meta:
+        header_parts.append(f"Tools: {meta.tool_calls}")
+    header_parts.append(f"Errors: {errors}")
+
+    sys.stdout.write("─" * 60 + "\n")
+    sys.stdout.write("  ".join(header_parts) + "\n")
+    sys.stdout.write("─" * 60 + "\n")
+
+    ascii_mode = getattr(args, "no_emoji", False) or os.environ.get("AGENT_STRACE_ASCII") == "1"
+    color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+    session_start_ts = events[0].timestamp if events else 0.0
+
+    for i, event in enumerate(events):
+        line = format_event(event, events[:i], session_start_ts, ascii_mode=ascii_mode, color=color)
+        sys.stdout.write(line + "\n")
+
+    sys.stdout.write("─" * 60 + "\n")
+
+    hints = []
+    if errors > 0:
+        hints.append(f"  → {errors} error(s) found. Try: agent-strace explain {session_id[:12]}")
+    hints.append(f"  → Cost estimate: agent-strace cost {session_id[:12]}")
+    hints.append(f"  → Full HTML:     agent-strace view {session_id[:12]} --html out.html")
+    sys.stdout.write("\n" + "\n".join(hints) + "\n")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -457,6 +528,15 @@ def build_parser() -> argparse.ArgumentParser:
                           help="inline subagent sessions under their parent tool_call")
     p_replay.add_argument("--tree", action="store_true",
                           help="show session hierarchy tree without full event replay")
+
+    # view (smart facade: compact timeline + contextual hints)
+    p_view = sub.add_parser("view", help="view a session — compact timeline with smart hints")
+    p_view.add_argument("session_id", nargs="?", help="session ID or prefix (default: latest)")
+    p_view.add_argument("--cost", action="store_true", help="show cost breakdown inline")
+    p_view.add_argument("--explain", action="store_true", help="show phase explanation")
+    p_view.add_argument("--html", metavar="FILE", help="export to self-contained HTML file")
+    p_view.add_argument("--json", action="store_true", help="output raw JSON event array")
+    p_view.add_argument("--no-emoji", action="store_true", help="use ASCII fallback icons")
 
     # list
     sub.add_parser("list", help="list all recorded sessions")
@@ -506,6 +586,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_setup = sub.add_parser("setup", help="generate Claude Code hooks configuration")
     p_setup.add_argument("--redact", action="store_true", help="enable secret redaction")
     p_setup.add_argument("--global", dest="global_config", action="store_true", help="output config for ~/.claude/settings.json (all projects)")
+
+    # init (zero-config setup — auto-patches Claude Code settings)
+    p_init = sub.add_parser("init", help="zero-config setup — auto-patches Claude Code settings")
+    p_init.add_argument("--no-redact", dest="redact", action="store_false", default=True,
+                         help="disable automatic secret redaction")
+    p_init.add_argument("--local", dest="scope", action="store_const", const="local", default="global",
+                         help="patch project-local .claude/settings.json instead of global")
 
     # import (Claude Code JSONL session logs)
     p_import = sub.add_parser("import", help="import a Claude Code JSONL session log")
@@ -788,10 +875,15 @@ def main() -> None:
         cmd_setup(args)
         sys.exit(0)
 
+    if args.command == "init":
+        cmd_init(args)
+        sys.exit(0)
+
     handlers = {
         "record": cmd_record,
         "record-http": cmd_record_http,
         "replay": cmd_replay,
+        "view": cmd_view,
         "list": cmd_list,
         "inspect": cmd_inspect,
         "export": cmd_export,

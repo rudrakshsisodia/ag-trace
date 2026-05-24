@@ -6,6 +6,7 @@ Supports filtering by event type and time range.
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -46,19 +47,53 @@ EVENT_COLORS = {
     EventType.ASSISTANT_RESPONSE: C.MAGENTA,
 }
 
+# Emoji icon set (new compact format)
 EVENT_ICONS = {
-    EventType.SESSION_START: "▶",
-    EventType.SESSION_END: "■",
-    EventType.TOOL_CALL: "→",
-    EventType.TOOL_RESULT: "←",
-    EventType.LLM_REQUEST: "⬆",
-    EventType.LLM_RESPONSE: "⬇",
-    EventType.FILE_READ: "📖",
-    EventType.FILE_WRITE: "📝",
-    EventType.DECISION: "◆",
-    EventType.ERROR: "✗",
-    EventType.USER_PROMPT: "👤",
-    EventType.ASSISTANT_RESPONSE: "🤖",
+    "session_start":      "▶",
+    "session_end":        "■",
+    "user_prompt":        "👤",
+    "assistant_response": "🤖",
+    "tool_call":          "🔵",
+    "tool_result":        "✅",  # overridden to ❌ on error
+    "llm_request":        "⬆",
+    "llm_response":       "⬇",
+    "file_read":          "📖",
+    "file_write":         "✏️",
+    "decision":           "◆",
+    "error":              "❌",
+}
+
+# ASCII fallback icons (one-to-one with EVENT_ICONS order above)
+_ASCII_ICONS = {
+    "session_start":      ">",
+    "session_end":        "^",
+    "user_prompt":        ".",
+    "assistant_response": "+",
+    "tool_call":          "!",
+    "tool_result":        "~",
+    "llm_request":        "<",
+    "llm_response":       "r",
+    "file_read":          "?",
+    "file_write":         "#",
+    "decision":           "@",
+    "error":              "!",
+}
+
+# ANSI 256-color codes for the new format
+_COLOR_MAP = {
+    "tool_call":          "\033[34m",   # blue
+    "tool_result_ok":     "\033[32m",   # green
+    "tool_result_err":    "\033[31m",   # red
+    "error":              "\033[31m",   # red
+    "user_prompt":        "\033[36m",   # cyan
+    "assistant_response": "\033[35m",   # magenta
+    "session_start":      "\033[2m",    # dim
+    "session_end":        "\033[2m",    # dim
+    "llm_request":        "\033[35m",   # magenta
+    "llm_response":       "\033[35m",   # magenta
+    "file_read":          "\033[33m",   # yellow
+    "file_write":         "\033[33m",   # yellow
+    "decision":           "\033[37m",   # white
 }
 
 
@@ -73,6 +108,24 @@ def _format_timestamp(ts: float, base_ts: float | None = None) -> str:
         return f"+{minutes}m{seconds:05.2f}s"
     dt = datetime.fromtimestamp(ts, tz=timezone.utc)
     return dt.strftime("%H:%M:%S.%f")[:-3]
+
+
+def _rel_time(ts: float, session_start_ts: float) -> str:
+    """Format relative time in compact form: +0.07s or +1m43s."""
+    offset = ts - session_start_ts
+    if offset < 60:
+        return f"+{offset:.2f}s"
+    minutes = int(offset // 60)
+    seconds = int(offset % 60)
+    return f"+{minutes}m{seconds:02d}s"
+
+
+def _is_ascii_mode() -> bool:
+    """Return True if ASCII mode should be used based on environment."""
+    term = os.environ.get("TERM", "")
+    if term in ("dumb", ""):
+        return True
+    return os.environ.get("AGENT_STRACE_ASCII", "") == "1"
 
 
 def _format_duration(ms: float | None) -> str:
@@ -172,10 +225,153 @@ def _tool_call_detail(tool_name: str, args: dict) -> str:
     return ", ".join(args.keys())
 
 
-def format_event(event: TraceEvent, base_ts: float | None = None) -> str:
-    """Format a single event as a colored terminal line."""
+def _build_summary(event: TraceEvent, prev_events: list[TraceEvent]) -> tuple[str, bool]:
+    """Build the single-line summary for a compact event line.
+
+    Returns (summary_text, is_error) where is_error causes the icon to flip to ❌.
+    """
+    et = event.event_type.value
+    data = event.data
+
+    if et == "tool_call":
+        name = data.get("tool_name", "?")
+        args = data.get("arguments", {})
+        detail = _tool_call_detail(name, args)
+        # Truncate detail to keep the line scannable
+        if detail and len(detail) > 60:
+            detail = detail[:60] + "…"
+        summary = f"{name}  {detail}" if detail else name
+        return summary, False
+
+    if et == "tool_result":
+        exit_code = data.get("exit_code")
+        is_err = bool(
+            data.get("is_error")
+            or data.get("error")
+            or (exit_code is not None and exit_code != 0)
+        )
+        duration_ms = event.duration_ms
+        dur_str = f"({int(duration_ms)}ms)" if duration_ms is not None else ""
+        output = data.get("result") or data.get("content_preview") or data.get("content") or ""
+        snippet = _strip_markdown(str(output))[:40].replace("\n", " ").strip()
+        if is_err:
+            code_str = f"exit={exit_code}" if exit_code is not None else ""
+            # Check if next same-tool event is a retry (gap < 30s)
+            tool_name = data.get("tool_name", "")
+            retry_tag = ""
+            if tool_name and prev_events:
+                for future in prev_events:
+                    if (
+                        future.event_type.value == "tool_call"
+                        and future.data.get("tool_name") == tool_name
+                        and abs(future.timestamp - event.timestamp) < 30
+                    ):
+                        retry_tag = "  [retry→]"
+                        break
+            summary = f"err {code_str}  {snippet}{retry_tag}".strip()
+        else:
+            summary = f"ok  {snippet}  {dur_str}".strip()
+        return summary, is_err
+
+    if et == "user_prompt":
+        prompt = data.get("prompt") or data.get("content") or data.get("text") or ""
+        return prompt[:60].replace("\n", " "), False
+
+    if et == "assistant_response":
+        text = data.get("text") or data.get("content") or ""
+        text = _strip_markdown(str(text))
+        return text[:60].replace("\n", " "), False
+
+    if et == "error":
+        tool_name = data.get("tool_name", "")
+        msg = data.get("message") or data.get("error") or ""
+        msg = _strip_markdown(str(msg))[:60]
+        summary = f"{tool_name}  {msg}".strip() if tool_name else msg
+        return summary, True
+
+    if et in ("file_read", "file_write"):
+        uri = data.get("uri") or data.get("file_path") or ""
+        return str(uri), False
+
+    if et == "session_start":
+        agent = data.get("agent_name") or data.get("command") or ""
+        if isinstance(agent, list):
+            agent = " ".join(agent)
+        return str(agent)[:60], False
+
+    if et == "session_end":
+        exit_code = data.get("exit_code", "?")
+        return f"exit={exit_code}", False
+
+    if et == "llm_request":
+        model = data.get("model", "")
+        count = data.get("message_count", 0)
+        return f"{model} ({count} msgs)".strip(), False
+
+    if et == "llm_response":
+        tokens = data.get("total_tokens", 0)
+        dur_str = f"  ({int(event.duration_ms)}ms)" if event.duration_ms else ""
+        return f"{tokens} tokens{dur_str}".strip(), False
+
+    if et == "decision":
+        choice = data.get("choice") or ""
+        return str(choice)[:60], False
+
+    return "", False
+
+
+def format_event(
+    event: TraceEvent,
+    prev_events: list[TraceEvent],
+    session_start_ts: float,
+    ascii_mode: bool = False,
+    color: bool = True,
+) -> str:
+    """Format a single event as a compact, scannable terminal line.
+
+    Line format:
+        {icon} {rel_time:>7}  {TYPE:<8}  {summary}
+
+    ascii_mode uses plain ASCII characters instead of emoji/unicode icons.
+    color applies ANSI 256-color codes when True.
+    """
+    et = event.event_type.value
+
+    summary, is_err = _build_summary(event, prev_events)
+
+    # Choose icon
+    icon_map = _ASCII_ICONS if ascii_mode else EVENT_ICONS
+    if et == "tool_result" and is_err:
+        icon = "!" if ascii_mode else "❌"
+    else:
+        icon = icon_map.get(et, "?")
+
+    # Relative time
+    rel = _rel_time(event.timestamp, session_start_ts)
+
+    # Type label: uppercase, max 8 chars
+    type_label = et.upper()[:8]
+
+    # Choose ANSI color
+    if color:
+        if et == "tool_result":
+            color_code = _COLOR_MAP["tool_result_err"] if is_err else _COLOR_MAP["tool_result_ok"]
+        else:
+            color_code = _COLOR_MAP.get(et, "")
+        reset = C.RESET
+    else:
+        color_code = ""
+        reset = ""
+
+    return f"{color_code}{icon} {rel:>7}  {type_label:<8}  {summary}{reset}"
+
+
+def _format_event_legacy(event: TraceEvent, base_ts: float | None = None) -> str:
+    """Legacy verbose format used by replay_session (terminal output)."""
     color = EVENT_COLORS.get(event.event_type, C.WHITE)
-    icon = EVENT_ICONS.get(event.event_type, " ")
+    # Use string key lookup for legacy EVENT_ICONS which now uses string keys
+    et_val = event.event_type.value
+    icon = EVENT_ICONS.get(et_val, " ")
     ts = _format_timestamp(event.timestamp, base_ts)
     duration = _format_duration(event.duration_ms)
 
@@ -188,7 +384,6 @@ def format_event(event: TraceEvent, base_ts: float | None = None) -> str:
         name = event.data.get("tool_name", "?")
         args = event.data.get("arguments", {})
         parts.append(f"{color}{C.BOLD}tool_call{C.RESET} {C.WHITE}{name}{C.RESET}")
-        # Show the most useful argument value inline
         detail = _tool_call_detail(name, args)
         if detail:
             parts.append(f"\n{C.GRAY}{'':>14}  {detail}{C.RESET}")
@@ -205,7 +400,6 @@ def format_event(event: TraceEvent, base_ts: float | None = None) -> str:
         if type_str:
             parts.append(f"{C.DIM}[{type_str}]{C.RESET}")
         parts.append(f"{duration}")
-        # Show a preview of the result
         output = result or preview
         if output:
             output = _strip_markdown(str(output))
@@ -350,7 +544,7 @@ def replay_session(
                 time.sleep(min(delay, 2.0))  # cap at 2s between events
             prev_ts = event.timestamp
 
-        out.write(format_event(event, base_ts) + "\n")
+        out.write(_format_event_legacy(event, base_ts) + "\n")
 
     out.write("\n")
 
