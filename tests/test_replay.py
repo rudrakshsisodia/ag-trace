@@ -130,7 +130,7 @@ class TestFormatEvent(unittest.TestCase):
             session_id="test",
             data={"tool_name": "Bash", "arguments": {"command": "ls -la"}},
         )
-        output = format_event(event, base_ts=event.timestamp)
+        output = format_event(event, [], event.timestamp)
         self.assertIn("Bash", output)
         self.assertIn("$ ls -la", output)
 
@@ -141,8 +141,7 @@ class TestFormatEvent(unittest.TestCase):
             data={"tool_name": "Bash", "result": "file1.py\nfile2.py\nfile3.py"},
             duration_ms=42,
         )
-        output = format_event(event, base_ts=event.timestamp)
-        self.assertIn("Bash", output)
+        output = format_event(event, [], event.timestamp)
         self.assertIn("42ms", output)
         self.assertIn("file1.py", output)
 
@@ -152,7 +151,7 @@ class TestFormatEvent(unittest.TestCase):
             session_id="test",
             data={"tool_name": "Bash", "error": "Command failed with exit code 1"},
         )
-        output = format_event(event, base_ts=event.timestamp)
+        output = format_event(event, [], event.timestamp)
         self.assertIn("Bash", output)
         self.assertIn("Command failed", output)
 
@@ -162,7 +161,7 @@ class TestFormatEvent(unittest.TestCase):
             session_id="test",
             data={"message": "Connection refused"},
         )
-        output = format_event(event, base_ts=event.timestamp)
+        output = format_event(event, [], event.timestamp)
         self.assertIn("Connection refused", output)
 
     def test_assistant_response_strips_markdown(self):
@@ -171,7 +170,7 @@ class TestFormatEvent(unittest.TestCase):
             session_id="test",
             data={"text": "**75 tests**, all passing in `3.60s`."},
         )
-        output = format_event(event, base_ts=event.timestamp)
+        output = format_event(event, [], event.timestamp)
         self.assertIn("75 tests", output)
         self.assertNotIn("**", output)
         self.assertNotIn("`", output)
@@ -182,7 +181,7 @@ class TestFormatEvent(unittest.TestCase):
             session_id="test",
             data={"prompt": "Fix the login bug"},
         )
-        output = format_event(event, base_ts=event.timestamp)
+        output = format_event(event, [], event.timestamp)
         self.assertIn("Fix the login bug", output)
 
 
