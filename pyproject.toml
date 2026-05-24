@@ -3,18 +3,18 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "agent-strace"
+name = "ag-trace"
 dynamic = ["version"]
-description = "strace for AI agents. Capture and replay every tool call, LLM request, and decision point."
+description = "See exactly what your AI agent did — every tool call, LLM request, file touch, and decision."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
-    { name = "Siddhant Khare", email = "siddhantkhare2694@gmail.com" }
+    { name = "Rudraksh Sisodia", email = "rudrakshsisodia@gmail.com" }
 ]
-keywords = ["ai", "agents", "observability", "tracing", "mcp", "llm", "tool-calls"]
+keywords = ["ai", "agents", "observability", "tracing", "mcp", "llm", "claude", "tool-calls", "debugging"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
@@ -27,13 +27,13 @@ classifiers = [
 ]
 
 [project.scripts]
+ag-trace = "agent_trace.cli:main"
 agent-strace = "agent_trace.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/Siddhant-K-code/agent-trace"
-Repository = "https://github.com/Siddhant-K-code/agent-trace"
-Issues = "https://github.com/Siddhant-K-code/agent-trace/issues"
-Documentation = "https://github.com/Siddhant-K-code/agent-trace#readme"
+Homepage = "https://github.com/rudrakshsisodia/ag-trace"
+Repository = "https://github.com/rudrakshsisodia/ag-trace"
+Issues = "https://github.com/rudrakshsisodia/ag-trace/issues"
 
 [tool.hatch.version]
 path = "src/agent_trace/__init__.py"
