@@ -27,7 +27,7 @@ class TraceStore:
         self.base_dir = Path(base_dir)
 
     def _session_dir(self, session_id: str) -> Path:
-        if not re.match(r'^[a-f0-9\-]{8,40}$', session_id):
+        if not session_id or ".." in session_id or "/" in session_id or "\x00" in session_id:
             raise ValueError(f"Invalid session ID: {session_id!r}")
         return self.base_dir / session_id
 
