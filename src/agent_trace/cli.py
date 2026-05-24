@@ -476,9 +476,9 @@ def cmd_view(args: argparse.Namespace, store: TraceStore | None = None) -> int:
 
     hints = []
     if errors > 0:
-        hints.append(f"  → {errors} error(s) found. Try: agent-strace explain {session_id[:12]}")
-    hints.append(f"  → Cost estimate: agent-strace cost {session_id[:12]}")
-    hints.append(f"  → Full HTML:     agent-strace view {session_id[:12]} --html out.html")
+        hints.append(f"  → {errors} error(s) found. Try: ag-trace explain {session_id[:12]}")
+    hints.append(f"  → Cost estimate: ag-trace cost {session_id[:12]}")
+    hints.append(f"  → Full HTML:     ag-trace view {session_id[:12]} --html out.html")
     sys.stdout.write("\n" + "\n".join(hints) + "\n")
     return 0
 

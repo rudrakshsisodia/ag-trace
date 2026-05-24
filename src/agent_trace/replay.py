@@ -313,7 +313,7 @@ def _build_summary(event: TraceEvent, prev_events: list[TraceEvent]) -> tuple[st
         return str(uri), False
 
     if et == "session_start":
-        agent = data.get("agent_name") or data.get("command") or ""
+        agent = data.get("agent_name") or data.get("command") or data.get("model") or data.get("mode") or ""
         if isinstance(agent, list):
             agent = " ".join(agent)
         return str(agent)[:60], False
