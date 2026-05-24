@@ -71,7 +71,7 @@ class TraceStore:
         if not self.base_dir.exists():
             return []
         sessions = []
-        for d in sorted(self.base_dir.iterdir(), reverse=True):
+        for d in self.base_dir.iterdir():
             meta_file = d / "meta.json"
             if meta_file.exists():
                 try:
@@ -81,7 +81,7 @@ class TraceStore:
                     continue
                 except TypeError:
                     continue
-        return sessions
+        return sorted(sessions, key=lambda m: m.started_at, reverse=True)
 
     def get_latest_session_id(self) -> str | None:
         sessions = self.list_sessions()
